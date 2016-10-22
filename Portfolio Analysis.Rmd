@@ -1,0 +1,307 @@
+---
+title: "R Notebook"
+author: Ryan Fraser
+output: html_notebook
+---
+
+## Motivation
+
+The main motivation behind this script is to create a R notebook detailing the steps I take to do portfolio analysis on the stocks listed on the JSE stock exchange. This is my first R notebook so the reader can expect some mistakes and/or improvements will be fixed/made in the future. 
+
+The implementation and practice of the concepts learned in the courses [Introduction to portfolio analysis in R](https://www.datacamp.com/courses/introduction-to-portfolio-analysis-in-r) and [Reporting with R markdown](https://www.datacamp.com/courses/reporting-with-r-markdown) are a added side benefit of this notebook.
+
+I believe in leveraging what is available on the internet so some of the code used here are not my own work but rather the work of others which I coppied and tweaked for my purposes. For example the following sections were coppied from [The Trader : Maintaining a database of price files in R](http://www.thertrader.com/2015/12/13/maintaining-a-database-of-price-files-in-r/).
+
+Some of the tweaks I made include:
+
+* Extract the lift of instruments from [African Markets : JSE listed companies](https://www.african-markets.com/en/stock-markets/jse/listed-companies) using [Import.io](https://www.import.io/).
+
+## Initial data downloading (listOfInstrument)
+
+```{r, eval=FALSE}
+##########################################
+## List of securities (Yahoo tickers) 
+## thertrader@gmail.com - Nov. 2015
+##########################################
+
+#install.packages('curl', dependencies = TRUE, repos = 'http://cran.rstudio.com/')
+#install.packages('jsonlite', dependencies = TRUE, repos = 'http://cran.rstudio.com/')
+
+library(curl)
+library(jsonlite)
+JSE_companies <- fromJSON("C:\\Users\\Ryan\\OneDrive\\Data\\Portfolio_analysis\\9e60ba63-91c7-4a45-b09e-5e86cb04a243.json")
+
+matrix1 <- matrix(unlist(JSE_companies$result$extractorData$data))
+matrix2 <- cbind(test, rep(1:3, each = nrow(test)/3))
+
+Company <- as.data.frame(test2[which(test2[,2] == "1"),1])
+Symbol <- as.data.frame(test2[which(test2[,2] == "2"),1])
+Sector <- as.data.frame(test2[which(test2[,2] == "3"),1])  
+
+data <- cbind(Company, Symbol, Sector)
+colnames(data) <- c("Company", "Symbol", "Sector")
+
+data
+
+```
+
+If an instrument isn’t part of my list (i.e. no csv file in my data folder) or if you do it for the very first time you have to download the initial historical data set. The example below downloads a set of ETFs daily prices from Yahoo Finance back to January 2000 and store the data in a csv file.
+
+
+```{r, eval=FALSE, warning=FALSE, error=FALSE}
+##########################################
+## Daily prices from Yahoo 
+## thertrader@gmail.com - Nov. 2015
+##########################################
+
+#install.packages('DT', dependencies = TRUE, repos = 'http://cran.rstudio.com/')
+
+library(quantmod)
+ 
+startDate = "2000-01-01"
+thePath = "C:\\Users\\Ryan\\OneDrive\\Data\\Portfolio_analysis\\"
+
+for (ii in Symbol[,1]){
+ #print(ii)
+tryCatch({
+  data = getSymbols(Symbols = ii, 
+                     src = "yahoo", 
+                     from = startDate, 
+                     auto.assign = FALSE)
+   colnames(data) = c("open","high","low","close","volume","adj.")
+   write.zoo(data,paste(thePath,ii,".csv",sep=""),sep=",",row.names=FALSE)
+
+  }, error = function(e){})
+}
+
+```
+
+## Update existing data
+
+The below code starts from existing files in the dedicated folder and updates all of them one after the other. I usually run this process everyday except when I’m on holiday. To add a new instrument, simply run step 1 above for this instrument alone.
+
+```{r, results='hide'}
+##########################################
+## Update data files 
+## thertrader@gmail.com - Nov. 2015
+##########################################
+library(quantmod)
+ 
+lookback = 60
+startDate = Sys.Date() - lookback
+thePath = "C:\\Users\\Ryan\\OneDrive\\Data\\Portfolio_analysis\\"
+theFiles = list.files(path=thePath,pattern=".csv")
+
+                 
+for (ii in theFiles) {
+ data = read.csv(paste(thePath,ii,sep=""))
+ data = xts(data[,c("open","high","low","close","volume","adj.")],
+ order.by = as.Date(data[,"Index"],format="%Y-%m-%d"))
+ lastHistoricalDate = index(data[nrow(data),])
+  
+ recent = getSymbols(Symbols = substr(ii,1,nchar(ii)-4), 
+                      src = "yahoo", 
+                      from = startDate, 
+                      auto.assign = FALSE)
+ colnames(recent) = c("open","high","low","close","volume","adj.")
+ 
+ pos = match(as.Date(lastHistoricalDate,format="%Y-%m-%d"),index(recent))
+  
+ if (!is.na(pos)){ 
+  if (pos == nrow(recent))
+   print("File already up-to-date")
+  
+  if (pos < nrow(recent)){
+   dt = NULL
+   dt = rbind(data,recent[(pos+1):nrow(recent),])
+   write.zoo(dt,paste(thePath,ii,sep=""),sep=",",row.names=FALSE) 
+  }
+ }
+  
+ if (is.na(pos))
+  print("Error: dates do not match")
+}
+   
+```
+
+## Create a batch file (updateDailyPrices.bat)
+
+Another important part of the job is creating a batch file that automates the updating process above (I’m a Windows user). This avoids opening R/RStudio and run the code from there. The code below is placed on a .bat file (the path has to be amended with the reader’s setup). Note that I added an output file (updateLog.txt) to track the execution.
+
+* cd ../..
+* C:\\program1\\R\\R-3.1.2\\bin\\R.exe CMD BATCH --vanilla --slave "D:\\daily\\data\\code\\updateHistoricalData.R" "D:\\daily\\data\\code\\updateLog.txt"
+
+## Transform and load data
+
+Now that the data collection process has been implemented and will update daily we can have a look at creating the optimal portfolio.
+
+The R package PerfanceAnalytics, xts and zoo will be used.
+
+```{r}
+
+thePath = "C:\\Users\\Ryan\\OneDrive\\Data\\Portfolio_analysis\\"
+theFiles = list.files(path=thePath,pattern=".csv")
+all_data = NULL
+all_data = as.list(rep(NA, length(theFiles)))
+i = 1
+for (ii in theFiles){
+ data = read.csv(paste(thePath,ii,sep=""))
+ data = xts(data[,c("open","high","low","close","volume","adj.")],
+ order.by = as.Date(data[,"Index"],format="%Y-%m-%d"))
+ data = to.monthly(data)
+ all_data[[i]] <- data
+ 
+ i = i + 1
+}
+
+names(all_data) <- gsub("\\.csv$", "", theFiles)
+
+```
+
+```{r}
+
+f <- function(x) { return(x[,4])}
+cloing_prices <- lapply(all_data, f)
+
+
+ncol(cloing_prices)
+
+big_data = do.call(what = cbind, args = cloing_prices)
+big_data <- big_data[-nrow(big_data), ]
+
+names(big_data) <- names(all_data)
+class(big_data)
+
+test <- window(big_data, start = '2003-01-01', end = '2016-09-30')
+
+as.data.table(test)
+
+plot(test[,"AGL"])
+
+```
+
+## Clean Data
+
+First thing i see are some stocks have a lot of NA values. This is because they have not been part of the JSE for a long time. I will count all the missing for each stock and eliminate those with more than 200 missing values (this is a arbritrary number)
+
+```{r}
+
+na_count <-sapply(big_data, function(y) sum(length(which(is.na(y)))))
+big_data1 <- big_data[, which(na_count < 20)]
+ncol(big_data1)
+na_count1 <-sapply(big_data1, function(y) sum(length(which(is.na(y)))))
+
+
+as.data.table(big_data1)
+
+```
+
+We are left with 211 stocks but there are still some missing. Please note this is probably not what you should be doing. I just want to get something working and will refine the process later.
+
+Next the zoo package will be used to do linear interpolation of the NA values. There a other methods we could try to handle NA values.
+
+```{r}
+library(zoo)
+#big_data2 <- interpNA(big_data1)
+big_data2 <- na.approx(big_data1)
+na_count2 <-sapply(big_data2, function(y) sum(length(which(is.na(y)))))
+big_data3 <- big_data2[, which(na_count2 == 0)]
+as.data.table(big_data3)
+
+ncol(big_data3)
+
+```
+
+Finally we get to the fun part. Optimazing portfolio returns. I will use the R package tseries to do this.
+
+```{r}
+#install.packages('PerformanceAnalytics', dependencies = TRUE, repos = 'http://cran.rstudio.com/')
+#install.packages('PortfolioAnalytics', dependencies = TRUE, repos = 'http://cran.rstudio.com/')
+#install.packages('tseries', dependencies = TRUE, repos = 'http://cran.rstudio.com/')
+
+
+library(PerformanceAnalytics)
+library(PortfolioAnalytics)
+library(tseries)
+
+# Create the variable returns using Return.calculate()  
+
+returns <- Return.calculate(big_data3)
+ 
+  # Print the first six rows of returns. Note that the first observation is NA, because there is no prior price.
+#head(returns)
+
+  
+# Remove the first row of returns
+returns <- returns[-1, ]
+
+# Calculate each stocks mean returns
+stockmu <- colMeans(returns)
+
+# Create a grid of target values
+grid <- seq(from = 0.01, to = 0.1, length.out = 50)
+
+# Create empty vectors to store means and deviations
+vpm <- rep(NA, length(grid))
+vpsd <- rep(NA, length(grid))
+weightslow <- rep(0, ncol(returns))
+weightshigh <- rep(0.5, ncol(returns))
+
+length(opt$pw)
+
+# Create an empty matrix to store weights
+mweights <- matrix(NA, 50, 193)
+
+i = 
+# Create your for loop
+for(i in 1:length(grid)) {
+  opt <- portfolio.optim(x = returns, pm = grid[i])
+  vpm[i] <- opt$pm
+  vpsd[i] <- opt$ps
+  mweights[i, ] <- opt$pw
+}
+
+opt_weights <- pf_weights[pf_weights >= 0.01]
+
+colnames(mweights) <- colnames(big_data3)
+
+plot(vpsd, vpm)
+
+# Create weights_minvar as the portfolio with the least risk
+weights_minvar <- mweights[vpsd == min(vpsd), ]
+
+# Calculate the Sharpe ratio
+vsr <- (vpm - 0.75/100) / vpsd
+
+# Create weights_max_sr as the portfolio with the maximum Sharpe ratio
+weights_max_sr <- mweights[vsr == max(vsr)]
+names(weights_max_sr) <- colnames(mweights)
+
+# Create barplot of weights_minvar and weights_max_sr
+par(mfrow = c(2, 1), mar = c(3, 2, 2, 1))
+barplot(weights_minvar[weights_minvar > 0.01])
+barplot(weights_max_sr[weights_max_sr > 0.01],las=2)
+
+library(ggplot2)
+ggplot(aes(weights_max_sr)) + geom_bar()
+str(weights_max_sr)
+
+plot(big_data3[,names(weights_max_sr[weights_max_sr > 0.01])])
+
+final_portfolio <- big_data3[, names(weights_max_sr[weights_max_sr > 0.01])]
+final_portfolio_returns <- returns[, names(weights_max_sr[weights_max_sr > 0.01])]
+
+chart.Bar(final_portfolio)
+
+chart.Boxplot(final_portfolio)
+
+for(i in 1:ncol(final_portfolio)) {
+chart.TimeSeries(final_portfolio[,i])
+}
+
+plot(rowMeans(final_portfolio))
+
+t(weights_max_sr)
+
+```
+
